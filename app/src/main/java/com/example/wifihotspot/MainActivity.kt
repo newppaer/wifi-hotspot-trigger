@@ -50,6 +50,7 @@ fun MainScreen() {
     var hotspotStatus by remember { mutableStateOf(HotspotManager.getStatusText(context)) }
     var isScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
+    var hasRoot by remember { mutableStateOf(HotspotManager.isRootAvailable()) }
 
     // 权限请求
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -132,6 +133,28 @@ fun MainScreen() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // Root 状态
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (hasRoot) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.errorContainer
+                    )
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            if (hasRoot) "✅ Root 权限已获取" else "❌ 未获取 Root 权限",
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (!hasRoot) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("此应用需要 Root 权限才能控制热点开关", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+
             // 热点状态
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -141,19 +164,31 @@ fun MainScreen() {
                         Text(hotspotStatus, style = MaterialTheme.typography.bodyLarge)
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = {
-                                val ok = HotspotManager.startTethering(context)
-                                lastAction = if (ok) "✅ 已尝试开启热点" else "❌ 开启失败"
-                                hotspotStatus = HotspotManager.getStatusText(context)
-                            }) {
+                            Button(
+                                onClick = {
+                                    val ok = HotspotManager.startTethering(context)
+                                    lastAction = if (ok) "✅ 已尝试开启热点" else "❌ 开启失败"
+                                    hotspotStatus = HotspotManager.getStatusText(context)
+                                },
+                                enabled = hasRoot
+                            ) {
                                 Text("开启热点")
                             }
+                            OutlinedButton(
+                                onClick = {
+                                    val ok = HotspotManager.stopTethering(context)
+                                    lastAction = if (ok) "✅ 已尝试关闭热点" else "❌ 关闭失败"
+                                    hotspotStatus = HotspotManager.getStatusText(context)
+                                },
+                                enabled = hasRoot
+                            ) {
+                                Text("关闭热点")
+                            }
                             OutlinedButton(onClick = {
-                                val ok = HotspotManager.stopTethering(context)
-                                lastAction = if (ok) "✅ 已尝试关闭热点" else "❌ 关闭失败"
+                                hasRoot = HotspotManager.isRootAvailable()
                                 hotspotStatus = HotspotManager.getStatusText(context)
                             }) {
-                                Text("关闭热点")
+                                Text("刷新")
                             }
                         }
                     }
