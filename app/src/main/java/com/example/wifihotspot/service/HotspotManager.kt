@@ -21,12 +21,13 @@ object HotspotManager {
         return try {
             val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
-            // 方式1: 直接调用 startTethering
+            // 方式1: 直接调用 startTethering (反射)
+            val callbackClass = Class.forName("android.net.ConnectivityManager\$OnStartTetheringCallback")
             val method: Method = cm.javaClass.getDeclaredMethod(
                 "startTethering",
                 Int::class.javaPrimitiveType,
                 Boolean::class.javaPrimitiveType,
-                android.net.ConnectivityManager.OnStartTetheringCallback::class.java,
+                callbackClass,
                 android.os.Handler::class.java
             )
             method.isAccessible = true

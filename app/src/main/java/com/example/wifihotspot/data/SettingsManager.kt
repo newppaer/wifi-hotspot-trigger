@@ -21,5 +21,5 @@ class SettingsManager(context: Context) {
 
     var minSignal: Int
         get() = prefs.getInt(KEY_MIN_SIGNAL, -80)
-        set(value) = prefs.putInt(KEY_MIN_SIGNAL, value).apply()
+        set(value) = prefs.edit().putInt(KEY_MIN_SIGNAL, value).apply()
 }
