@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "WifiHotspotTrigger"
-include ':app'
+include(":app")
