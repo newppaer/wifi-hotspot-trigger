@@ -69,17 +69,13 @@ fun MainScreen() {
     val activity = context as? Activity
     val settings = remember { SettingsManager(context) }
     val scanner = remember { WifiScanner(context) }
-    val btScanner = remember { BluetoothScanner(context) }
     val scope = rememberCoroutineScope()
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
-    var targetBt by remember { mutableStateOf(settings.targetBluetooth) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
-    var btResults by remember { mutableStateOf<List<BluetoothScanner.BluetoothDeviceInfo>>(emptyList()) }
     var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
     var isScanning by remember { mutableStateOf(false) }
-    var isBtScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
 
     val hasAnyPermission = statusInfo.mode != HotspotController.Mode.NONE
@@ -129,14 +125,6 @@ fun MainScreen() {
             }
         }
         onDispose { scanner.stopListening() }
-    }
-
-    DisposableEffect(Unit) {
-        btScanner.startListening { results ->
-            btResults = results
-            isBtScanning = false
-        }
-        onDispose { btScanner.stopListening() }
     }
 
     Scaffold(
@@ -189,10 +177,8 @@ fun MainScreen() {
                 item {
                     SettingsCard(
                         targetSsid = targetSsid,
-                        targetBt = targetBt,
                         autoStart = autoStart,
                         onSsidChange = { targetSsid = it; settings.targetSsid = it },
-                        onBtChange = { targetBt = it; settings.targetBluetooth = it },
                         onAutoStartChange = { autoStart = it; settings.autoStart = it }
                     )
                 }
@@ -322,29 +308,20 @@ fun ControlCard(statusInfo: HotspotController.StatusInfo, hasPermission: Boolean
 }
 
 @Composable
-fun SettingsCard(targetSsid: String, targetBt: String, autoStart: Boolean, onSsidChange: (String) -> Unit, onBtChange: (String) -> Unit, onAutoStartChange: (Boolean) -> Unit) {
+fun SettingsCard(targetSsid: String, autoStart: Boolean, onSsidChange: (String) -> Unit, onAutoStartChange: (Boolean) -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("🎯 触发配置", fontWeight = FontWeight.Bold)
+            Text("自动化配置", fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(
                 value = targetSsid,
                 onValueChange = onSsidChange,
-                label = { Text("目标 WiFi (SSID)") },
+                label = { Text("目标 WiFi 名称 (SSID)") },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp)
             )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = targetBt,
-                onValueChange = onBtChange,
-                label = { Text("目标蓝牙设备名") },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text("如: CAR-Multimedia") }
-            )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("发现目标自动开热点", style = MaterialTheme.typography.bodySmall)
+                Text("感应到该 WiFi 时自动开启热点", style = MaterialTheme.typography.bodySmall)
                 Switch(checked = autoStart, onCheckedChange = onAutoStartChange)
             }
         }
