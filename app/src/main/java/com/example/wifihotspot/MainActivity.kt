@@ -107,10 +107,23 @@ fun MainScreen() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         if (permissions.values.all { it }) {
-            scanner.startScan()
-            isScanning = true
+            val started = scanner.startScan()
+            isScanning = started
+            if (!started) Toast.makeText(context, "扫描失败，请检查定位服务是否开启", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(context, "请授予必要的权限以扫描 WiFi", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val btPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        if (permissions.values.all { it }) {
+            val started = btScanner.startScan()
+            isBtScanning = started
+            if (!started) Toast.makeText(context, "蓝牙扫描启动失败", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "需要蓝牙权限", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -206,8 +219,11 @@ fun MainScreen() {
                                     arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
                                 }
                                 val ok = perms.all { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
-                                if (ok) { scanner.startScan(); isScanning = true }
-                                else wifiPermissionLauncher.launch(perms)
+                                if (ok) {
+                                    val started = scanner.startScan()
+                                    isScanning = started
+                                    if (!started) Toast.makeText(context, "扫描失败，请检查定位服务是否开启", Toast.LENGTH_SHORT).show()
+                                } else wifiPermissionLauncher.launch(perms)
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp)
@@ -218,8 +234,21 @@ fun MainScreen() {
                         }
                         Button(
                             onClick = {
-                                btScanner.startScan()
-                                isBtScanning = true
+                                val btPerms = mutableListOf<String>()
+                                if (Build.VERSION.SDK_INT >= 31) {
+                                    btPerms += Manifest.permission.BLUETOOTH_SCAN
+                                    btPerms += Manifest.permission.BLUETOOTH_CONNECT
+                                }
+                                val needed = btPerms.filter {
+                                    ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+                                }
+                                if (needed.isEmpty()) {
+                                    val started = btScanner.startScan()
+                                    isBtScanning = started
+                                    if (!started) Toast.makeText(context, "蓝牙扫描启动失败", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    btPermissionLauncher.launch(needed.toTypedArray())
+                                }
                             },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
