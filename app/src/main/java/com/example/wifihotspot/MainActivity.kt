@@ -33,7 +33,6 @@ import com.example.wifihotspot.data.SettingsManager
 import com.example.wifihotspot.service.HotspotController
 import com.example.wifihotspot.service.HotspotManagerShizuku
 import com.example.wifihotspot.service.WifiScanner
-import com.example.wifihotspot.service.BluetoothScanner
 import com.example.wifihotspot.ui.WifiHotspotTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -42,17 +41,23 @@ import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
-    private val shizukuListener = Shizuku.OnRequestPermissionResultListener { _, _ -> recreate() }
+    private val permissionListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
+        recreate()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        Shizuku.addRequestPermissionResultListener(shizukuListener)
-        setContent { WifiHotspotTheme { MainScreen() } }
+        Shizuku.addRequestPermissionResultListener(permissionListener)
+        setContent {
+            WifiHotspotTheme {
+                MainScreen()
+            }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        Shizuku.removeRequestPermissionResultListener(shizukuListener)
+        Shizuku.removeRequestPermissionResultListener(permissionListener)
     }
 }
 
@@ -62,110 +67,63 @@ fun MainScreen() {
     val context = LocalContext.current
     val activity = context as? Activity
     val settings = remember { SettingsManager(context) }
-    val wifiScanner = remember { WifiScanner(context) }
-    val btScanner = remember { BluetoothScanner(context) }
+    val scanner = remember { WifiScanner(context) }
     val scope = rememberCoroutineScope()
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
-    var targetBt by remember { mutableStateOf(settings.targetBluetooth) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
-    var bgMonitor by remember { mutableStateOf(settings.bgMonitor) }
-    var triggerMode by remember { mutableStateOf(settings.triggerMode) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
-    var btResults by remember { mutableStateOf<List<BluetoothScanner.BluetoothDeviceInfo>>(emptyList()) }
     var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
-    var isWifiScanning by remember { mutableStateOf(false) }
-    var isBtScanning by remember { mutableStateOf(false) }
+    var isScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
 
     val hasAnyPermission = statusInfo.mode != HotspotController.Mode.NONE
 
-    fun refreshStatus() {
+    fun refreshStatusAsync() {
         scope.launch {
-            statusInfo = withContext(Dispatchers.IO) { HotspotController.getFullStatus(context) }
+            val freshStatus = withContext(Dispatchers.IO) {
+                HotspotController.getFullStatus(context)
+            }
+            statusInfo = freshStatus
         }
     }
 
-    // 自动刷新状态
     LaunchedEffect(Unit) {
         while (true) {
-            statusInfo = withContext(Dispatchers.IO) { HotspotController.getFullStatus(context) }
+            val freshStatus = withContext(Dispatchers.IO) {
+                HotspotController.getFullStatus(context)
+            }
+            statusInfo = freshStatus
             delay(3000)
         }
     }
 
-    // WiFi + 蓝牙 + 通知权限
-    val multiPermLauncher = rememberLauncherForActivityResult(
+    val wifiPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { perms ->
-        if (perms.values.all { it }) {
-            Toast.makeText(context, "权限已授予", Toast.LENGTH_SHORT).show()
+    ) { permissions ->
+        if (permissions.values.all { it }) {
+            scanner.startScan()
+            isScanning = true
+        } else {
+            Toast.makeText(context, "请授予必要的权限以扫描 WiFi", Toast.LENGTH_SHORT).show()
         }
     }
 
-    fun requestAllPermissions() {
-        val perms = mutableListOf<String>()
-        // WiFi
-        perms += Manifest.permission.ACCESS_FINE_LOCATION
-        perms += Manifest.permission.ACCESS_COARSE_LOCATION
-        if (Build.VERSION.SDK_INT >= 33) {
-            perms += Manifest.permission.NEARBY_WIFI_DEVICES
-        }
-        // Bluetooth
-        if (Build.VERSION.SDK_INT >= 31) {
-            perms += Manifest.permission.BLUETOOTH_SCAN
-            perms += Manifest.permission.BLUETOOTH_CONNECT
-        }
-        // 通知
-        if (Build.VERSION.SDK_INT >= 33) {
-            perms += Manifest.permission.POST_NOTIFICATIONS
-        }
-
-        val needed = perms.filter {
-            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (needed.isNotEmpty()) {
-            multiPermLauncher.launch(needed.toTypedArray())
-        }
-    }
-
-    // WiFi 扫描监听
     DisposableEffect(Unit) {
-        wifiScanner.startListening { results ->
+        scanner.startListening { results ->
             scanResults = results
-            isWifiScanning = false
-
+            isScanning = false
             if (autoStart && targetSsid.isNotBlank() && HotspotController.isAvailable()) {
                 val inRange = results.any { it.ssid.equals(targetSsid, ignoreCase = true) }
                 if (inRange && !statusInfo.hotspotEnabled) {
                     scope.launch {
                         withContext(Dispatchers.IO) { HotspotController.startTethering(context) }
-                        lastAction = "✅ 检测到 WiFi $targetSsid，已开启热点"
-                        refreshStatus()
+                        refreshStatusAsync()
                     }
                 }
             }
         }
-        onDispose { wifiScanner.stopListening() }
-    }
-
-    // 蓝牙扫描监听
-    DisposableEffect(Unit) {
-        btScanner.startListening { device ->
-            if (targetBt.isNotBlank() && autoStart && HotspotController.isAvailable()) {
-                if (device.name.equals(targetBt, ignoreCase = true) ||
-                    device.name.contains(targetBt, ignoreCase = true)) {
-                    if (!statusInfo.hotspotEnabled) {
-                        scope.launch {
-                            withContext(Dispatchers.IO) { HotspotController.startTethering(context) }
-                            lastAction = "✅ 检测到蓝牙 ${device.name}，已开启热点"
-                            refreshStatus()
-                        }
-                    }
-                }
-            }
-        }
-        onDispose { btScanner.stopListening() }
+        onDispose { scanner.stopListening() }
     }
 
     Scaffold(
@@ -173,131 +131,94 @@ fun MainScreen() {
             CenterAlignedTopAppBar(
                 title = { Text("WiFi 热点助手", fontWeight = FontWeight.Bold) },
                 actions = {
-                    IconButton(onClick = { refreshStatus() }) { Icon(Icons.Default.Refresh, "刷新") }
-                    IconButton(onClick = { requestAllPermissions() }) { Icon(Icons.Default.Security, "权限") }
+                    IconButton(onClick = { refreshStatusAsync() }) { Icon(Icons.Default.Refresh, "刷新") }
                 },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
             )
         }
     ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(Brush.verticalGradient(
-                    listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f), Color.Transparent)
-                ))
-        ) {
+        Box(modifier = Modifier.fillMaxSize().padding(padding).background(
+            Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f), Color.Transparent))
+        )) {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                item { Spacer(Modifier.height(8.dp)) }
-
-                // === 权限状态 ===
+                item { Spacer(modifier = Modifier.height(8.dp)) }
                 item { StatusCard(statusInfo, activity) }
-
-                // === 热点控制 ===
                 item {
                     ControlCard(
                         statusInfo = statusInfo,
                         hasPermission = hasAnyPermission,
                         lastAction = lastAction,
                         onStart = {
-                            scope.launch {
-                                lastAction = "正在开启..."
-                                val ok = withContext(Dispatchers.IO) { HotspotController.startTethering(context) }
-                                lastAction = if (ok) "✅ 开启成功" else "❌ 开启失败"
-                                refreshStatus()
+                            if (!hasAnyPermission) {
+                                Toast.makeText(context, "请先授权", Toast.LENGTH_SHORT).show()
+                            } else {
+                                scope.launch {
+                                    lastAction = "正在尝试开启..."
+                                    val ok = withContext(Dispatchers.IO) { HotspotController.startTethering(context) }
+                                    lastAction = if (ok) "✅ 开启成功" else "❌ 开启失败"
+                                    refreshStatusAsync()
+                                }
                             }
                         },
                         onStop = {
                             scope.launch {
-                                lastAction = "正在关闭..."
+                                lastAction = "正在尝试关闭..."
                                 val ok = withContext(Dispatchers.IO) { HotspotController.stopTethering(context) }
                                 lastAction = if (ok) "✅ 已关闭" else "❌ 关闭失败"
-                                refreshStatus()
+                                refreshStatusAsync()
                             }
                         }
                     )
                 }
-
-                // === 触发配置 ===
                 item {
-                    TriggerConfigCard(
+                    SettingsCard(
                         targetSsid = targetSsid,
-                        targetBt = targetBt,
                         autoStart = autoStart,
-                        bgMonitor = bgMonitor,
                         onSsidChange = { targetSsid = it; settings.targetSsid = it },
-                        onBtChange = { targetBt = it; settings.targetBluetooth = it },
-                        onAutoStartChange = { autoStart = it; settings.autoStart = it },
-                        onBgMonitorChange = {
-                            bgMonitor = it
-                            settings.bgMonitor = it
-                            lastAction = if (it) "✅ 后台监控已开启 (使用 Shizuku)" else "⬜ 后台监控已关闭"
-                        }
+                        onAutoStartChange = { autoStart = it; settings.autoStart = it }
                     )
                 }
-
-                // === WiFi 扫描 ===
                 item {
-                    Row(
+                    Button(
+                        onClick = {
+                            val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES)
+                            } else {
+                                arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+                            }
+                            
+                            val allGranted = permissions.all { 
+                                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED 
+                            }
+                            
+                            if (allGranted) {
+                                scanner.startScan()
+                                isScanning = true
+                            } else {
+                                wifiPermissionLauncher.launch(permissions)
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        shape = RoundedCornerShape(12.dp)
                     ) {
-                        Button(
-                            onClick = {
-                                wifiScanner.startScan()
-                                isWifiScanning = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Icon(Icons.Default.Wifi, null)
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isWifiScanning) "扫描中..." else "WiFi")
-                        }
-
-                        Button(
-                            onClick = {
-                                btScanner.startScan()
-                                isBtScanning = true
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            enabled = btScanner.isAvailable()
-                        ) {
-                            Icon(Icons.Default.Bluetooth, null)
-                            Spacer(Modifier.width(4.dp))
-                            Text(if (isBtScanning) "扫描中..." else "蓝牙")
-                        }
+                        Icon(Icons.Default.Search, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(if (isScanning) "正在扫描..." else "扫描周围 WiFi")
                     }
                 }
-
-                // WiFi 结果
-                if (scanResults.isNotEmpty()) {
-                    item { Text("📡 WiFi (${scanResults.size})", fontWeight = FontWeight.Bold) }
-                    items(scanResults.sortedByDescending { it.level }) { wifi ->
-                        WifiItem(wifi, wifi.ssid.equals(targetSsid, ignoreCase = true)) {
-                            targetSsid = it; settings.targetSsid = it
-                        }
+                items(
+                    items = scanResults.sortedByDescending { it.level },
+                    key = { it.bssid }
+                ) { wifi ->
+                    WifiItem(wifi, isTarget = wifi.ssid.equals(targetSsid, ignoreCase = true)) {
+                        targetSsid = it
+                        settings.targetSsid = it
                     }
                 }
-
-                // 蓝牙结果
-                if (btResults.isNotEmpty()) {
-                    item { Text("🔵 蓝牙 (${btResults.size})", fontWeight = FontWeight.Bold) }
-                    items(btResults, key = { it.address }) { bt ->
-                        BtItem(bt, bt.name.equals(targetBt, ignoreCase = true) || bt.name.contains(targetBt, ignoreCase = true)) {
-                            targetBt = it.name; settings.targetBluetooth = it.name
-                        }
-                    }
-                }
-
-                item { Spacer(Modifier.height(24.dp)) }
+                item { Spacer(modifier = Modifier.height(24.dp)) }
             }
         }
     }
@@ -309,29 +230,28 @@ fun StatusCard(statusInfo: HotspotController.StatusInfo, activity: Activity?) {
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (statusInfo.mode != HotspotController.Mode.NONE)
-                MaterialTheme.colorScheme.surfaceVariant
-            else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
+            containerColor = if (statusInfo.mode != HotspotController.Mode.NONE) 
+                MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.2f)
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
-                    if (statusInfo.mode != HotspotController.Mode.NONE) Icons.Default.CheckCircle else Icons.Default.Info,
-                    null,
+                    imageVector = if (statusInfo.mode != HotspotController.Mode.NONE) Icons.Default.CheckCircle else Icons.Default.Info,
+                    contentDescription = null,
                     tint = if (statusInfo.mode != HotspotController.Mode.NONE) Color(0xFF4CAF50) else MaterialTheme.colorScheme.error
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("权限: ${statusInfo.mode.label}", fontWeight = FontWeight.Bold)
+                Text("权限状态: ${statusInfo.mode.label}", fontWeight = FontWeight.Bold)
             }
-            Spacer(Modifier.height(8.dp))
-            PermissionRow("Root", statusInfo.rootAvailable)
-            PermissionRow("Shizuku", statusInfo.shizukuAvailable, statusInfo.shizukuGranted)
+            Spacer(Modifier.height(12.dp))
+            PermissionRow("Root 状态", statusInfo.rootAvailable)
+            PermissionRow("Shizuku 状态", statusInfo.shizukuAvailable, statusInfo.shizukuGranted)
             if (statusInfo.shizukuAvailable && !statusInfo.shizukuGranted) {
                 Button(
                     onClick = { activity?.let { HotspotManagerShizuku.requestPermission(it) } },
                     modifier = Modifier.fillMaxWidth().padding(top = 8.dp)
-                ) { Text("授权 Shizuku") }
+                ) { Text("点击授权 Shizuku") }
             }
         }
     }
@@ -339,10 +259,14 @@ fun StatusCard(statusInfo: HotspotController.StatusInfo, activity: Activity?) {
 
 @Composable
 fun PermissionRow(label: String, available: Boolean, granted: Boolean = true) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(
-            when { !available -> "未检测到"; !granted -> "未授权"; else -> "已就绪" },
+            text = when {
+                !available -> "未检测到"
+                !granted -> "未授权"
+                else -> "已就绪"
+            },
             color = if (available && granted) Color(0xFF4CAF50) else MaterialTheme.colorScheme.outline
         )
     }
@@ -350,58 +274,54 @@ fun PermissionRow(label: String, available: Boolean, granted: Boolean = true) {
 
 @Composable
 fun ControlCard(statusInfo: HotspotController.StatusInfo, hasPermission: Boolean, lastAction: String, onStart: () -> Unit, onStop: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp), elevation = CardDefaults.cardElevation(4.dp)) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
         Column(modifier = Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(statusInfo.statusText, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onStart, Modifier.weight(1f), RoundedCornerShape(12.dp), enabled = hasPermission) { Text("开启") }
-                OutlinedButton(onStop, Modifier.weight(1f), RoundedCornerShape(12.dp), enabled = hasPermission) { Text("关闭") }
+                Button(
+                    onClick = onStart,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = hasPermission,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (hasPermission) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                    )
+                ) { Text("开启") }
+                OutlinedButton(
+                    onClick = onStop,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(12.dp),
+                    enabled = hasPermission
+                ) { Text("关闭") }
             }
             if (lastAction.isNotBlank()) {
-                Text(lastAction, modifier = Modifier.padding(top = 8.dp), style = MaterialTheme.typography.bodySmall)
+                Text(lastAction, modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
 }
 
 @Composable
-fun TriggerConfigCard(
-    targetSsid: String, targetBt: String, autoStart: Boolean, bgMonitor: Boolean,
-    onSsidChange: (String) -> Unit, onBtChange: (String) -> Unit,
-    onAutoStartChange: (Boolean) -> Unit, onBgMonitorChange: (Boolean) -> Unit
-) {
+fun SettingsCard(targetSsid: String, autoStart: Boolean, onSsidChange: (String) -> Unit, onAutoStartChange: (Boolean) -> Unit) {
     Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("🎯 触发配置", fontWeight = FontWeight.Bold)
+            Text("自动化配置", fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
-
             OutlinedTextField(
-                targetSsid, onSsidChange,
-                label = { Text("目标 WiFi (SSID)") },
+                value = targetSsid,
+                onValueChange = onSsidChange,
+                label = { Text("目标 WiFi 名称 (SSID)") },
                 modifier = Modifier.fillMaxWidth(),
-                leadingIcon = { Icon(Icons.Default.Wifi, null) },
                 shape = RoundedCornerShape(12.dp)
             )
-            Spacer(Modifier.height(8.dp))
-
-            OutlinedTextField(
-                targetBt, onBtChange,
-                label = { Text("目标蓝牙设备名") },
-                modifier = Modifier.fillMaxWidth(),
-                leadingIcon = { Icon(Icons.Default.Bluetooth, null) },
-                shape = RoundedCornerShape(12.dp),
-                placeholder = { Text("如: CAR-Multimedia") }
-            )
-            Spacer(Modifier.height(12.dp))
-
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("发现目标自动开热点", style = MaterialTheme.typography.bodySmall)
-                Switch(autoStart, onAutoStartChange)
-            }
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                Text("后台持续监控 (前台服务)", style = MaterialTheme.typography.bodySmall)
-                Switch(bgMonitor, onBgMonitorChange)
+                Text("感应到该 WiFi 时自动开启热点", style = MaterialTheme.typography.bodySmall)
+                Switch(checked = autoStart, onCheckedChange = onAutoStartChange)
             }
         }
     }
@@ -411,33 +331,15 @@ fun TriggerConfigCard(
 fun WifiItem(wifi: WifiScanner.WifiNetworkInfo, isTarget: Boolean, onClick: (String) -> Unit) {
     Surface(
         onClick = { onClick(wifi.ssid) },
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clip(RoundedCornerShape(12.dp)),
         color = if (isTarget) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Wifi, null, tint = if (isTarget) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
             Spacer(Modifier.width(12.dp))
             Column {
-                Text(if (wifi.ssid.isEmpty()) "<隐藏>" else wifi.ssid, fontWeight = if (isTarget) FontWeight.Bold else FontWeight.Normal)
-                Text("${wifi.level} dBm | ${if (wifi.frequency > 5000) "5G" else "2.4G"}", style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-fun BtItem(bt: BluetoothScanner.BluetoothDeviceInfo, isTarget: Boolean, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)),
-        color = if (isTarget) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
-    ) {
-        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Bluetooth, null, tint = if (isTarget) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)
-            Spacer(Modifier.width(12.dp))
-            Column {
-                Text(bt.name, fontWeight = if (isTarget) FontWeight.Bold else FontWeight.Normal)
-                Text("${bt.rssi} dBm | ${bt.address}", style = MaterialTheme.typography.bodySmall)
+                Text(if (wifi.ssid.isEmpty()) "<隐藏网络>" else wifi.ssid, fontWeight = if (isTarget) FontWeight.Bold else FontWeight.Normal)
+                Text("${wifi.level} dBm", style = MaterialTheme.typography.bodySmall)
             }
         }
     }
