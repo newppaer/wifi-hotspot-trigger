@@ -69,13 +69,17 @@ fun MainScreen() {
     val activity = context as? Activity
     val settings = remember { SettingsManager(context) }
     val scanner = remember { WifiScanner(context) }
+    val btScanner = remember { BluetoothScanner(context) }
     val scope = rememberCoroutineScope()
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
+    var targetBt by remember { mutableStateOf(settings.targetBluetooth) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
+    var btResults by remember { mutableStateOf(emptyList<BluetoothScanner.BluetoothDeviceInfo>()) }
     var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
     var isScanning by remember { mutableStateOf(false) }
+    var isBtScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
 
     val hasAnyPermission = statusInfo.mode != HotspotController.Mode.NONE
