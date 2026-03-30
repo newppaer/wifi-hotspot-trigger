@@ -5,12 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.util.Log
 
-/**
- * WiFi 扫描器
- * 扫描周围 WiFi 网络
- */
 class WifiScanner(private val context: Context) {
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     private var scanCallback: ((List<WifiNetworkInfo>) -> Unit)? = null
@@ -18,32 +15,48 @@ class WifiScanner(private val context: Context) {
     data class WifiNetworkInfo(
         val ssid: String,
         val bssid: String,
-        val level: Int,        // 信号强度 (dBm)
-        val frequency: Int     // 频率 (MHz)
+        val level: Int,
+        val frequency: Int
     )
 
     private val wifiScanReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
-                val success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
-                val results = wifiManager.scanResults.map {
-                    WifiNetworkInfo(
-                        ssid = it.SSID,
-                        bssid = it.BSSID,
-                        level = it.level,
-                        frequency = it.frequency
-                    )
-                }
-                Log.d(TAG, "Scan complete: ${results.size} networks found")
-                scanCallback?.invoke(results)
+                fetchScanResults()
             }
+        }
+    }
+
+    private fun fetchScanResults() {
+        try {
+            val results = wifiManager.scanResults.map {
+                WifiNetworkInfo(
+                    ssid = it.SSID,
+                    bssid = it.BSSID,
+                    level = it.level,
+                    frequency = it.frequency
+                )
+            }
+            Log.d(TAG, "Fetched ${results.size} WiFi networks")
+            scanCallback?.invoke(results)
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permission error fetching scan results", e)
         }
     }
 
     fun startListening(callback: (List<WifiNetworkInfo>) -> Unit) {
         scanCallback = callback
         val intentFilter = IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-        context.registerReceiver(wifiScanReceiver, intentFilter)
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Android 14+ (API 34+) 必须指定导出属性
+            context.registerReceiver(wifiScanReceiver, intentFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            context.registerReceiver(wifiScanReceiver, intentFilter)
+        }
+        
+        // 立即获取一次当前结果
+        fetchScanResults()
     }
 
     fun stopListening() {
@@ -53,25 +66,12 @@ class WifiScanner(private val context: Context) {
         scanCallback = null
     }
 
-    /**
-     * 触发一次扫描
-     */
     fun startScan(): Boolean {
         return try {
-            wifiManager.startScan()
+            @Suppress("DEPRECATION")
+            wifiManager.startScan().also { Log.d(TAG, "Start scan triggered: $it") }
         } catch (e: SecurityException) {
-            Log.e(TAG, "No permission for WiFi scan", e)
             false
-        }
-    }
-
-    /**
-     * 检查目标 WiFi 是否在范围内
-     */
-    fun isTargetInRange(targetSsid: String, minLevel: Int = -80): Boolean {
-        val results = wifiManager.scanResults
-        return results.any {
-            it.SSID.equals(targetSsid, ignoreCase = true) && it.level >= minLevel
         }
     }
 
