@@ -30,7 +30,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.wifihotspot.data.SettingsManager
-import com.example.wifihotspot.service.*
+import com.example.wifihotspot.service.HotspotController
+import com.example.wifihotspot.service.HotspotManagerShizuku
+import com.example.wifihotspot.service.WifiScanner
+import com.example.wifihotspot.service.BluetoothScanner
 import com.example.wifihotspot.ui.WifiHotspotTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -234,14 +237,7 @@ fun MainScreen() {
                         onBgMonitorChange = {
                             bgMonitor = it
                             settings.bgMonitor = it
-                            if (it) {
-                                // 启动前台服务
-                                HotspotForegroundService.start(context, targetSsid, targetBt)
-                                lastAction = "✅ 后台监控已开启"
-                            } else {
-                                HotspotForegroundService.stop(context)
-                                lastAction = "⬜ 后台监控已关闭"
-                            }
+                            lastAction = if (it) "✅ 后台监控已开启 (使用 Shizuku)" else "⬜ 后台监控已关闭"
                         }
                     )
                 }
