@@ -1,7 +1,6 @@
 package com.example.wifihotspot
 
-import android.Manifest
-import android.content.Intent
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.widget.Toast
@@ -22,9 +21,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.wifihotspot.data.SettingsManager
-import com.example.wifihotspot.service.HotspotManager
+import com.example.wifihotspot.service.HotspotController
+import com.example.wifihotspot.service.HotspotManagerShizuku
 import com.example.wifihotspot.service.WifiScanner
 import com.example.wifihotspot.ui.WifiHotspotTheme
+import android.Manifest
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,19 +42,18 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
+    val activity = context as? Activity
     val settings = remember { SettingsManager(context) }
     val scanner = remember { WifiScanner(context) }
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
-    var hotspotStatus by remember { mutableStateOf(HotspotManager.getStatusText(context)) }
+    var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
     var isScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
-    var hasRoot by remember { mutableStateOf(HotspotManager.isRootAvailable()) }
 
-    // 权限请求
-    val permissionLauncher = rememberLauncherForActivityResult(
+    val wifiPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.values.all { it }
@@ -79,34 +79,33 @@ fun MainScreen() {
             scanner.startScan()
             isScanning = true
         } else {
-            permissionLauncher.launch(permissions)
+            wifiPermissionLauncher.launch(permissions)
         }
     }
 
-    // 监听扫描结果
+    fun refreshStatus() {
+        statusInfo = HotspotController.getFullStatus(context)
+    }
+
     DisposableEffect(Unit) {
         scanner.startListening { results ->
             scanResults = results
             isScanning = false
 
-            // 自动触发热点
-            if (autoStart && targetSsid.isNotBlank()) {
+            if (autoStart && targetSsid.isNotBlank() && HotspotController.isAvailable()) {
                 val inRange = results.any {
                     it.ssid.equals(targetSsid, ignoreCase = true) &&
                     it.level >= settings.minSignal
                 }
-                if (inRange && !HotspotManager.isHotspotEnabled(context)) {
-                    val success = HotspotManager.startTethering(context)
-                    lastAction = if (success) "✅ 检测到 $targetSsid，已尝试开启热点"
-                                 else "❌ 开启热点失败（可能不支持反射方式）"
-                    hotspotStatus = HotspotManager.getStatusText(context)
+                if (inRange && !HotspotController.isHotspotEnabled(context)) {
+                    val success = HotspotController.startTethering(context)
+                    lastAction = if (success) "✅ 检测到 $targetSsid，已开启热点 (${statusInfo.mode.label})"
+                                 else "❌ 开启热点失败"
+                    refreshStatus()
                 }
             }
         }
-
-        onDispose {
-            scanner.stopListening()
-        }
+        onDispose { scanner.stopListening() }
     }
 
     Scaffold(
@@ -114,9 +113,7 @@ fun MainScreen() {
             TopAppBar(
                 title = { Text("WiFi 热点触发器") },
                 actions = {
-                    IconButton(onClick = {
-                        hotspotStatus = HotspotManager.getStatusText(context)
-                    }) {
+                    IconButton(onClick = { refreshStatus() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新状态")
                     }
                 },
@@ -127,69 +124,81 @@ fun MainScreen() {
         }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
+            modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Root 状态
+            // 权限模式状态
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (hasRoot) MaterialTheme.colorScheme.primaryContainer
-                                        else MaterialTheme.colorScheme.errorContainer
+                        containerColor = when (statusInfo.mode) {
+                            HotspotController.Mode.ROOT -> MaterialTheme.colorScheme.primaryContainer
+                            HotspotController.Mode.SHIZUKU -> MaterialTheme.colorScheme.secondaryContainer
+                            HotspotController.Mode.NONE -> MaterialTheme.colorScheme.errorContainer
+                        }
                     )
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
+                        Text("🔧 权限模式: ${statusInfo.mode.label}", style = MaterialTheme.typography.titleMedium)
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            if (hasRoot) "✅ Root 权限已获取" else "❌ 未获取 Root 权限",
-                            style = MaterialTheme.typography.titleMedium
+                            if (statusInfo.rootAvailable) "✅ Root" else "⬜ Root",
+                            style = MaterialTheme.typography.bodyMedium
                         )
-                        if (!hasRoot) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("此应用需要 Root 权限才能控制热点开关", style = MaterialTheme.typography.bodySmall)
+                        Text(
+                            when {
+                                statusInfo.shizukuGranted -> "✅ Shizuku (已授权)"
+                                statusInfo.shizukuAvailable -> "🟡 Shizuku (未授权)"
+                                else -> "⬜ Shizuku (未运行)"
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (statusInfo.shizukuAvailable && !statusInfo.shizukuGranted) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { activity?.let { HotspotManagerShizuku.requestPermission(it) } },
+                                modifier = Modifier.fillMaxWidth()
+                            ) { Text("授权 Shizuku") }
+                        }
+                        if (statusInfo.mode == HotspotController.Mode.NONE) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "需要 Root 或 Shizuku 才能控制热点",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
                         }
                     }
                 }
             }
 
-            // 热点状态
+            // 热点控制
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("📡 热点状态", style = MaterialTheme.typography.titleMedium)
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(hotspotStatus, style = MaterialTheme.typography.bodyLarge)
+                        Text(statusInfo.statusText, style = MaterialTheme.typography.bodyLarge)
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    val ok = HotspotManager.startTethering(context)
-                                    lastAction = if (ok) "✅ 已尝试开启热点" else "❌ 开启失败"
-                                    hotspotStatus = HotspotManager.getStatusText(context)
+                                    val ok = HotspotController.startTethering(context)
+                                    lastAction = if (ok) "✅ 已开启热点 (${statusInfo.mode.label})" else "❌ 开启失败"
+                                    refreshStatus()
                                 },
-                                enabled = hasRoot
-                            ) {
-                                Text("开启热点")
-                            }
+                                enabled = statusInfo.mode != HotspotController.Mode.NONE
+                            ) { Text("开启热点") }
                             OutlinedButton(
                                 onClick = {
-                                    val ok = HotspotManager.stopTethering(context)
-                                    lastAction = if (ok) "✅ 已尝试关闭热点" else "❌ 关闭失败"
-                                    hotspotStatus = HotspotManager.getStatusText(context)
+                                    val ok = HotspotController.stopTethering(context)
+                                    lastAction = if (ok) "✅ 已关闭热点" else "❌ 关闭失败"
+                                    refreshStatus()
                                 },
-                                enabled = hasRoot
-                            ) {
-                                Text("关闭热点")
-                            }
-                            OutlinedButton(onClick = {
-                                hasRoot = HotspotManager.isRootAvailable()
-                                hotspotStatus = HotspotManager.getStatusText(context)
-                            }) {
-                                Text("刷新")
-                            }
+                                enabled = statusInfo.mode != HotspotController.Mode.NONE
+                            ) { Text("关闭热点") }
+                            OutlinedButton(onClick = { refreshStatus() }) { Text("刷新") }
                         }
                     }
                 }
@@ -203,10 +212,7 @@ fun MainScreen() {
                         Spacer(modifier = Modifier.height(8.dp))
                         OutlinedTextField(
                             value = targetSsid,
-                            onValueChange = {
-                                targetSsid = it
-                                settings.targetSsid = it
-                            },
+                            onValueChange = { targetSsid = it; settings.targetSsid = it },
                             modifier = Modifier.fillMaxWidth(),
                             placeholder = { Text("输入目标 WiFi 名称") },
                             singleLine = true
@@ -219,8 +225,7 @@ fun MainScreen() {
                         ) {
                             Text("检测到目标 WiFi 自动开启热点")
                             Switch(checked = autoStart, onCheckedChange = {
-                                autoStart = it
-                                settings.autoStart = it
+                                autoStart = it; settings.autoStart = it
                             })
                         }
                     }
@@ -232,48 +237,30 @@ fun MainScreen() {
                 Button(
                     onClick = { checkPermissionsAndScan() },
                     modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (isScanning) "扫描中..." else "🔍 扫描周围 WiFi")
-                }
+                ) { Text(if (isScanning) "扫描中..." else "🔍 扫描周围 WiFi") }
             }
 
-            // 操作结果
             if (lastAction.isNotBlank()) {
                 item {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                        )
-                    ) {
-                        Text(lastAction, modifier = Modifier.padding(16.dp))
-                    }
+                    Card(modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                    ) { Text(lastAction, modifier = Modifier.padding(16.dp)) }
                 }
             }
 
-            // 扫描结果
             if (scanResults.isNotEmpty()) {
                 item {
-                    Text(
-                        "📡 扫描到 ${scanResults.size} 个 WiFi",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+                    Text("📡 扫描到 ${scanResults.size} 个 WiFi", style = MaterialTheme.typography.titleMedium)
                 }
-
                 items(scanResults.sortedByDescending { it.level }) { wifi ->
                     val isTarget = wifi.ssid.equals(targetSsid, ignoreCase = true)
                     Card(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = if (isTarget) {
-                            CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
-                        } else {
-                            CardDefaults.cardColors()
-                        }
+                        colors = if (isTarget) CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                                else CardDefaults.cardColors()
                     ) {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -281,8 +268,7 @@ fun MainScreen() {
                                 Text(
                                     if (wifi.ssid.isBlank()) "<隐藏网络>" else wifi.ssid,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (isTarget) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurface
+                                    color = if (isTarget) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
                                     "${wifi.level} dBm | ${if (wifi.frequency > 5000) "5GHz" else "2.4GHz"}",
@@ -290,14 +276,11 @@ fun MainScreen() {
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            if (isTarget) {
-                                Text("🎯", style = MaterialTheme.typography.bodyLarge)
-                            }
+                            if (isTarget) Text("🎯", style = MaterialTheme.typography.bodyLarge)
                         }
                     }
                 }
             }
-
             item { Spacer(modifier = Modifier.height(16.dp)) }
         }
     }
