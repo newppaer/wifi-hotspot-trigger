@@ -73,6 +73,7 @@ fun MainScreen() {
     val scope = rememberCoroutineScope()
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
+    var targetBt by remember { mutableStateOf(settings.targetBluetooth) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
     var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
