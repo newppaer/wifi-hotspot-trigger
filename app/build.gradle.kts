@@ -17,6 +17,7 @@ android {
 
     buildFeatures {
         compose = true
+        aidl = true
     }
 
     composeOptions {
@@ -41,5 +42,5 @@ dependencies {
 
     // Shizuku
     implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
+    // implementation("dev.rikka.shizuku:provider:13.1.5")
 }
