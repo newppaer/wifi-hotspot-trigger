@@ -1,6 +1,6 @@
 package com.example.wifihotspot
 
-import android.app.Activity
+import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -22,11 +22,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.wifihotspot.data.SettingsManager
-import com.example.wifihotspot.service.HotspotController
-import com.example.wifihotspot.service.HotspotManagerShizuku
+import com.example.wifihotspot.service.HotspotManager
 import com.example.wifihotspot.service.WifiScanner
 import com.example.wifihotspot.ui.WifiHotspotTheme
-import android.Manifest
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,34 +41,19 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun MainScreen() {
     val context = LocalContext.current
-    val activity = context as? Activity
     val settings = remember { SettingsManager(context) }
     val scanner = remember { WifiScanner(context) }
 
     var targetSsid by remember { mutableStateOf(settings.targetSsid) }
     var autoStart by remember { mutableStateOf(settings.autoStart) }
     var scanResults by remember { mutableStateOf<List<WifiScanner.WifiNetworkInfo>>(emptyList()) }
-    var statusInfo by remember { mutableStateOf(HotspotController.getFullStatus(context)) }
+    var hotspotStatus by remember { mutableStateOf(HotspotManager.getStatusText(context)) }
     var isScanning by remember { mutableStateOf(false) }
     var lastAction by remember { mutableStateOf("") }
+    var hasRoot by remember { mutableStateOf(HotspotManager.isRootAvailable()) }
 
-    // Shizuku 权限请求回调
-    val shizukuPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) {
-        // 权限变更后刷新状态
-        statusInfo = HotspotController.refreshMode().let {
-            HotspotController.getFullStatus(context)
-        }
-        if (HotspotController.isAvailable()) {
-            lastAction = "✅ Shizuku 权限已授予"
-        } else {
-            lastAction = "❌ Shizuku 授权失败"
-        }
-    }
-
-    // WiFi 权限请求
-    val wifiPermissionLauncher = rememberLauncherForActivityResult(
+    // 权限请求
+    val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
         val allGranted = permissions.values.all { it }
@@ -96,12 +79,8 @@ fun MainScreen() {
             scanner.startScan()
             isScanning = true
         } else {
-            wifiPermissionLauncher.launch(permissions)
+            permissionLauncher.launch(permissions)
         }
-    }
-
-    fun refreshStatus() {
-        statusInfo = HotspotController.getFullStatus(context)
     }
 
     // 监听扫描结果
@@ -111,16 +90,16 @@ fun MainScreen() {
             isScanning = false
 
             // 自动触发热点
-            if (autoStart && targetSsid.isNotBlank() && HotspotController.isAvailable()) {
+            if (autoStart && targetSsid.isNotBlank()) {
                 val inRange = results.any {
                     it.ssid.equals(targetSsid, ignoreCase = true) &&
                     it.level >= settings.minSignal
                 }
-                if (inRange && !HotspotController.isHotspotEnabled(context)) {
-                    val success = HotspotController.startTethering(context)
-                    lastAction = if (success) "✅ 检测到 $targetSsid，已开启热点 (${statusInfo.mode.label})"
-                                 else "❌ 开启热点失败"
-                    refreshStatus()
+                if (inRange && !HotspotManager.isHotspotEnabled(context)) {
+                    val success = HotspotManager.startTethering(context)
+                    lastAction = if (success) "✅ 检测到 $targetSsid，已尝试开启热点"
+                                 else "❌ 开启热点失败（可能不支持反射方式）"
+                    hotspotStatus = HotspotManager.getStatusText(context)
                 }
             }
         }
@@ -135,7 +114,9 @@ fun MainScreen() {
             TopAppBar(
                 title = { Text("WiFi 热点触发器") },
                 actions = {
-                    IconButton(onClick = { refreshStatus() }) {
+                    IconButton(onClick = {
+                        hotspotStatus = HotspotManager.getStatusText(context)
+                    }) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新状态")
                     }
                 },
@@ -152,105 +133,61 @@ fun MainScreen() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // === 双轨模式状态 ===
+            // Root 状态
             item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
-                        containerColor = when (statusInfo.mode) {
-                            HotspotController.Mode.ROOT -> MaterialTheme.colorScheme.primaryContainer
-                            HotspotController.Mode.SHIZUKU -> MaterialTheme.colorScheme.secondaryContainer
-                            HotspotController.Mode.NONE -> MaterialTheme.colorScheme.errorContainer
-                        }
+                        containerColor = if (hasRoot) MaterialTheme.colorScheme.primaryContainer
+                                        else MaterialTheme.colorScheme.errorContainer
                     )
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text(
-                            "🔧 权限模式: ${statusInfo.mode.label}",
+                            if (hasRoot) "✅ Root 权限已获取" else "❌ 未获取 Root 权限",
                             style = MaterialTheme.typography.titleMedium
                         )
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Root 状态
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                if (statusInfo.rootAvailable) "✅ Root" else "⬜ Root",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-
-                        // Shizuku 状态
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                when {
-                                    statusInfo.shizukuGranted -> "✅ Shizuku (已授权)"
-                                    statusInfo.shizukuAvailable -> "🟡 Shizuku (未授权)"
-                                    else -> "⬜ Shizuku (未运行)"
-                                },
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-
-                        // Shizuku 授权按钮
-                        if (statusInfo.shizukuAvailable && !statusInfo.shizukuGranted) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    activity?.let {
-                                        HotspotManagerShizuku.requestPermission(it)
-                                    }
-                                },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("授权 Shizuku")
-                            }
-                        }
-
-                        // 无可用方案提示
-                        if (statusInfo.mode == HotspotController.Mode.NONE) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "需要 Root 或 Shizuku 才能控制热点",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
+                        if (!hasRoot) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text("此应用需要 Root 权限才能控制热点开关", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
             }
 
-            // === 热点状态 + 控制 ===
+            // 热点状态
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Text("📡 热点状态", style = MaterialTheme.typography.titleMedium)
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(statusInfo.statusText, style = MaterialTheme.typography.bodyLarge)
+                        Text(hotspotStatus, style = MaterialTheme.typography.bodyLarge)
                         Spacer(modifier = Modifier.height(12.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(
                                 onClick = {
-                                    val ok = HotspotController.startTethering(context)
-                                    lastAction = if (ok) "✅ 已开启热点 (${statusInfo.mode.label})"
-                                                 else "❌ 开启失败"
-                                    refreshStatus()
+                                    val ok = HotspotManager.startTethering(context)
+                                    lastAction = if (ok) "✅ 已尝试开启热点" else "❌ 开启失败"
+                                    hotspotStatus = HotspotManager.getStatusText(context)
                                 },
-                                enabled = statusInfo.mode != HotspotController.Mode.NONE
+                                enabled = hasRoot
                             ) {
                                 Text("开启热点")
                             }
                             OutlinedButton(
                                 onClick = {
-                                    val ok = HotspotController.stopTethering(context)
-                                    lastAction = if (ok) "✅ 已关闭热点"
-                                                 else "❌ 关闭失败"
-                                    refreshStatus()
+                                    val ok = HotspotManager.stopTethering(context)
+                                    lastAction = if (ok) "✅ 已尝试关闭热点" else "❌ 关闭失败"
+                                    hotspotStatus = HotspotManager.getStatusText(context)
                                 },
-                                enabled = statusInfo.mode != HotspotController.Mode.NONE
+                                enabled = hasRoot
                             ) {
                                 Text("关闭热点")
                             }
-                            OutlinedButton(onClick = { refreshStatus() }) {
+                            OutlinedButton(onClick = {
+                                hasRoot = HotspotManager.isRootAvailable()
+                                hotspotStatus = HotspotManager.getStatusText(context)
+                            }) {
                                 Text("刷新")
                             }
                         }
@@ -258,7 +195,7 @@ fun MainScreen() {
                 }
             }
 
-            // === 目标 WiFi 设置 ===
+            // 目标 WiFi 设置
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp)) {
@@ -290,7 +227,7 @@ fun MainScreen() {
                 }
             }
 
-            // === 扫描按钮 ===
+            // 扫描按钮
             item {
                 Button(
                     onClick = { checkPermissionsAndScan() },
@@ -300,7 +237,7 @@ fun MainScreen() {
                 }
             }
 
-            // === 操作结果 ===
+            // 操作结果
             if (lastAction.isNotBlank()) {
                 item {
                     Card(
@@ -314,7 +251,7 @@ fun MainScreen() {
                 }
             }
 
-            // === 扫描结果 ===
+            // 扫描结果
             if (scanResults.isNotEmpty()) {
                 item {
                     Text(
