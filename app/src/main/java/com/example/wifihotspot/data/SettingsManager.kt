@@ -10,6 +10,7 @@ class SettingsManager(context: Context) {
         const val KEY_TARGET_BLUETOOTH = "target_bluetooth"
         const val KEY_AUTO_START = "auto_start"
         const val KEY_MIN_SIGNAL = "min_signal"
+        const val KEY_MONITOR_ENABLED = "monitor_enabled"
     }
 
     var targetSsid: String
@@ -27,4 +28,8 @@ class SettingsManager(context: Context) {
     var minSignal: Int
         get() = prefs.getInt(KEY_MIN_SIGNAL, -80)
         set(value) = prefs.edit().putInt(KEY_MIN_SIGNAL, value).apply()
+
+    var monitorEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MONITOR_ENABLED, false)
+        set(value) = prefs.edit().putBoolean(KEY_MONITOR_ENABLED, value).apply()
 }
